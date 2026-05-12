@@ -1,0 +1,184 @@
+name: 'PR Preview Environment'
+description: 'Deploy or tear down an ephemeral preview environment on a Tailscale home server via Traefik'
+author: 'VideoPlusSensors'
+
+branding:
+  icon: 'eye'
+  color: 'blue'
+
+inputs:
+  action:
+    description: '"deploy" or "teardown"'
+    required: true
+  project_id:
+    description: 'Project identifier, e.g. "vpsi"'
+    required: true
+  pr_number:
+    description: 'Pull request number'
+    required: true
+  services:
+    description: 'JSON array of service definitions'
+    required: false
+    default: '[]'
+  preview_host:
+    description: 'Tailscale IP of the preview server'
+    required: true
+  preview_user:
+    description: 'SSH username on the preview server'
+    required: true
+  preview_ssh_key:
+    description: 'SSH private key for the preview server'
+    required: true
+  preview_domain:
+    description: 'Domain used for preview URLs'
+    required: false
+    default: 'changelapse.com'
+  ecr_registry:
+    description: 'ECR registry URL (optional)'
+    required: false
+    default: ''
+  aws_region:
+    description: 'AWS region for ECR login'
+    required: false
+    default: 'us-east-1'
+  health_check_timeout:
+    description: 'Seconds to wait for health checks (0 to skip)'
+    required: false
+    default: '120'
+
+outputs:
+  preview_url:
+    description: 'URL of the deployed preview environment'
+    value: ${{ steps.set-url.outputs.url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set preview URL
+      id: set-url
+      shell: bash
+      run: |
+        echo "url=https://${{ inputs.project_id }}_${{ inputs.pr_number }}.${{ inputs.preview_domain }}" >> "$GITHUB_OUTPUT"
+
+    - name: Set up SSH key
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ inputs.preview_ssh_key }}" > ~/.ssh/preview_key
+        chmod 600 ~/.ssh/preview_key
+        cat >> ~/.ssh/config <<'EOF'
+        Host *
+          IdentityFile ~/.ssh/preview_key
+          StrictHostKeyChecking accept-new
+        EOF
+
+    - name: Deploy preview environment
+      if: inputs.action == 'deploy'
+      shell: bash
+      run: |
+        "${{ github.action_path }}/scripts/deploy.sh" \
+          --project-id "${{ inputs.project_id }}" \
+          --pr-number  "${{ inputs.pr_number }}" \
+          --domain     "${{ inputs.preview_domain }}" \
+          --services   '${{ inputs.services }}' \
+          --host       "${{ inputs.preview_host }}" \
+          --user       "${{ inputs.preview_user }}" \
+          --ecr-registry "${{ inputs.ecr_registry }}" \
+          --aws-region   "${{ inputs.aws_region }}"
+
+    - name: Wait for health checks
+      if: inputs.action == 'deploy' && inputs.health_check_timeout != '0'
+      shell: bash
+      run: |
+        SERVICES='${{ inputs.services }}'
+        TIMEOUT="${{ inputs.health_check_timeout }}"
+        INTERVAL=10
+
+        # Extract services that have a health_check path defined
+        HC_SERVICES=$(echo "$SERVICES" | jq -c '[.[] | select(.health_check != null and .health_check != "")]')
+        COUNT=$(echo "$HC_SERVICES" | jq 'length')
+
+        if [[ "$COUNT" -eq 0 ]]; then
+          echo "No services with health_check defined — skipping."
+          exit 0
+        fi
+
+        ELAPSED=0
+        ALL_HEALTHY=false
+
+        while [[ $ELAPSED -lt $TIMEOUT ]]; do
+          ALL_HEALTHY=true
+          while IFS= read -r svc; do
+            HOSTNAME=$(echo "$svc" | jq -r '.hostname // empty')
+            HC_PATH=$(echo "$svc" | jq -r '.health_check')
+            if [[ -z "$HOSTNAME" ]]; then
+              HOSTNAME="${{ inputs.project_id }}_${{ inputs.pr_number }}.${{ inputs.preview_domain }}"
+            fi
+            RESPONSE=$(curl -sk "https://${HOSTNAME}${HC_PATH}" || true)
+            if echo "$RESPONSE" | grep -qE '"status"\s*:\s*"(UP|ok|healthy)"'; then
+              echo "  [OK] https://${HOSTNAME}${HC_PATH}"
+            else
+              echo "  [WAIT] https://${HOSTNAME}${HC_PATH}"
+              ALL_HEALTHY=false
+            fi
+          done < <(echo "$HC_SERVICES" | jq -c '.[]')
+
+          if $ALL_HEALTHY; then
+            echo "All health checks passed."
+            exit 0
+          fi
+
+          sleep $INTERVAL
+          ELAPSED=$(( ELAPSED + INTERVAL ))
+        done
+
+        echo "::warning::Health check timeout reached after ${TIMEOUT}s — some services may not be ready."
+
+    - name: Compute service names
+      if: inputs.action == 'deploy'
+      id: svc-names
+      shell: bash
+      run: |
+        NAMES=$(echo '${{ inputs.services }}' | jq -r '[.[].name] | join(", ")')
+        echo "names=${NAMES}" >> "$GITHUB_OUTPUT"
+
+    - name: Post deploy PR comment
+      if: inputs.action == 'deploy'
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        header: preview-env
+        message: |
+          ## Preview Environment Deployed
+
+          | | |
+          |---|---|
+          | **URL** | ${{ steps.set-url.outputs.url }} |
+          | **Services** | ${{ steps.svc-names.outputs.names }} |
+          | **Updated** | ${{ github.event.pull_request.updated_at }} |
+
+          > Accessible on Tailscale network only
+
+    - name: Teardown preview environment
+      if: inputs.action == 'teardown'
+      shell: bash
+      run: |
+        "${{ github.action_path }}/scripts/teardown.sh" \
+          --project-id "${{ inputs.project_id }}" \
+          --pr-number  "${{ inputs.pr_number }}" \
+          --host       "${{ inputs.preview_host }}" \
+          --user       "${{ inputs.preview_user }}"
+
+    - name: Post teardown PR comment
+      if: inputs.action == 'teardown'
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        header: preview-env
+        message: |
+          ## Preview Environment Torn Down
+
+          Environment torn down (${{ github.event.action }}).
+
+    - name: Clean up SSH key
+      if: always()
+      shell: bash
+      run: rm -f ~/.ssh/preview_key
