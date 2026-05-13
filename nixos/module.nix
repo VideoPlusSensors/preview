@@ -15,6 +15,8 @@ let
 
   cfg = config.services.preview;
 
+  useEnvFile = cfg.aws.environmentFile != null;
+
   cleanupScript = ./.. + "/scripts/cleanup-orphaned-previews.sh";
 in
 {
@@ -47,17 +49,34 @@ in
     aws = {
       accessKeyId = mkOption {
         type = types.str;
-        description = "AWS access key ID for Route 53 DNS challenge.";
+        default = "";
+        description = "AWS access key ID for Route 53 DNS challenge. Ignored if environmentFile is set.";
       };
 
       secretAccessKey = mkOption {
         type = types.str;
-        description = "AWS secret access key for Route 53 DNS challenge.";
+        default = "";
+        description = "AWS secret access key for Route 53 DNS challenge. Ignored if environmentFile is set.";
       };
 
       hostedZoneId = mkOption {
         type = types.str;
-        description = "Route 53 hosted zone ID for the domain.";
+        default = "";
+        description = "Route 53 hosted zone ID for the domain. Ignored if environmentFile is set.";
+      };
+
+      environmentFile = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = ''
+          Path to a file containing AWS environment variables for the Traefik
+          DNS-01 challenge. Expected format (one per line):
+            AWS_ACCESS_KEY_ID=...
+            AWS_SECRET_ACCESS_KEY=...
+            AWS_HOSTED_ZONE_ID=...
+          When set, the plain-text aws.* options are ignored. Use this with
+          sops-nix or agenix to avoid secrets in the Nix store.
+        '';
       };
     };
 
@@ -118,11 +137,15 @@ in
         "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
       ];
 
-      environment = {
+      environment = lib.mkIf (!useEnvFile) {
         AWS_ACCESS_KEY_ID = cfg.aws.accessKeyId;
         AWS_SECRET_ACCESS_KEY = cfg.aws.secretAccessKey;
         AWS_HOSTED_ZONE_ID = cfg.aws.hostedZoneId;
       };
+
+      environmentFiles = lib.mkIf useEnvFile [
+        cfg.aws.environmentFile
+      ];
 
       ports = [
         "80:80"
