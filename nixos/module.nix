@@ -2,6 +2,7 @@
   config,
   lib,
   pkgs,
+  extraContainer ? null,
   ...
 }:
 
@@ -95,6 +96,32 @@ in
       default = "Sun *-*-* 03:00:00";
       description = "systemd OnCalendar schedule for the cleanup timer.";
     };
+
+    natInterface = mkOption {
+      type = types.str;
+      default = "tailscale0";
+      description = "External network interface for NAT masquerade (outbound traffic from nspawn containers).";
+    };
+
+    emphe = {
+      stateDir = mkOption {
+        type = types.str;
+        default = "/var/lib/emphe";
+        description = "Base directory for emphe state (cloned repos, etc).";
+      };
+
+      configFile = mkOption {
+        type = types.str;
+        default = "/etc/emphe/config.yaml";
+        description = "Path to emphe project registry config.";
+      };
+
+      traefikDynamicDir = mkOption {
+        type = types.str;
+        default = "/etc/traefik/dynamic";
+        description = "Directory for Traefik file provider dynamic configs.";
+      };
+    };
   };
 
   config = mkIf cfg.enable {
@@ -103,6 +130,11 @@ in
 
     # OCI containers backend
     virtualisation.oci-containers.backend = "docker";
+
+    # NAT for nspawn containers (ve-+ matches all veth pairs)
+    networking.nat.enable = true;
+    networking.nat.internalInterfaces = [ "ve-+" ];
+    networking.nat.externalInterface = cfg.natInterface;
 
     # Create the shared traefik network before any containers start
     systemd.services.docker-network-traefik = {
@@ -137,6 +169,8 @@ in
         "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=route53"
         "--certificatesresolvers.letsencrypt.acme.email=${cfg.acmeEmail}"
         "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+        "--providers.file.directory=/etc/traefik/dynamic/"
+        "--providers.file.watch=true"
       ];
 
       environment = lib.optionalAttrs (!useEnvFile) {
@@ -158,6 +192,7 @@ in
       volumes = [
         "/var/run/docker.sock:/var/run/docker.sock:ro"
         "traefik-certs:/letsencrypt"
+        "${cfg.emphe.traefikDynamicDir}:/etc/traefik/dynamic/:ro"
       ];
 
       extraOptions = [ "--network=traefik" ];
@@ -172,6 +207,10 @@ in
     # Ensure previews directory exists
     systemd.tmpfiles.rules = [
       "d ${cfg.previewsDir} 0755 root root -"
+      "d ${cfg.emphe.stateDir} 0755 root root -"
+      "d ${cfg.emphe.stateDir}/repos 0755 root root -"
+      "d ${cfg.emphe.traefikDynamicDir} 0755 root root -"
+      "d /etc/emphe 0755 root root -"
     ];
 
     # Cleanup service
@@ -206,13 +245,18 @@ in
     };
 
     # System packages
-    environment.systemPackages = with pkgs; [
-      docker-compose
-      awscli2
-      gh
-      jq
-      curl
-    ];
+    environment.systemPackages =
+      (with pkgs; [
+        docker-compose
+        awscli2
+        gh
+        jq
+        curl
+        yq-go
+      ])
+      ++ lib.optionals (extraContainer != null) [
+        extraContainer.packages.${pkgs.system}.default
+      ];
 
     # Firewall
     networking.firewall.allowedTCPPorts = [
