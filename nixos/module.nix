@@ -42,7 +42,7 @@ in
 
     traefikImage = mkOption {
       type = types.str;
-      default = "traefik:v3.4";
+      default = "traefik:v3.7";
       description = "Traefik OCI image to use.";
     };
 
@@ -139,10 +139,7 @@ in
         "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
       ];
 
-      environment = {
-        DOCKER_API_VERSION = "1.40";
-      }
-      // lib.optionalAttrs (!useEnvFile) {
+      environment = lib.optionalAttrs (!useEnvFile) {
         AWS_ACCESS_KEY_ID = cfg.aws.accessKeyId;
         AWS_SECRET_ACCESS_KEY = cfg.aws.secretAccessKey;
         AWS_HOSTED_ZONE_ID = cfg.aws.hostedZoneId;
