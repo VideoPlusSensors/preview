@@ -42,7 +42,7 @@ in
 
     traefikImage = mkOption {
       type = types.str;
-      default = "traefik:v3.1";
+      default = "traefik:v3.4";
       description = "Traefik OCI image to use.";
     };
 
