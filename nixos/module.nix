@@ -113,8 +113,10 @@ in
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        ExecStart = "${pkgs.docker}/bin/docker network create traefik || true";
       };
+      script = ''
+        ${pkgs.docker}/bin/docker network create traefik || true
+      '';
     };
 
     # Traefik reverse proxy
