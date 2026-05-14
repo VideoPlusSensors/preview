@@ -139,7 +139,10 @@ in
         "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
       ];
 
-      environment = lib.mkIf (!useEnvFile) {
+      environment = {
+        DOCKER_API_VERSION = "1.40";
+      }
+      // lib.optionalAttrs (!useEnvFile) {
         AWS_ACCESS_KEY_ID = cfg.aws.accessKeyId;
         AWS_SECRET_ACCESS_KEY = cfg.aws.secretAccessKey;
         AWS_HOSTED_ZONE_ID = cfg.aws.hostedZoneId;
